@@ -1,0 +1,21 @@
+{
+  "name": "resumecraft-ai-monorepo",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Production-Quality AI Resume Customizer for ThePrepLab Assignment",
+  "scripts": {
+    "dev:frontend": "cd frontend && npm run dev",
+    "build:frontend": "cd frontend && npm run build",
+    "test:backend": "cd backend && .\\venv\\Scripts\\pytest -v",
+    "lint:frontend": "cd frontend && npm run lint"
+  },
+  "keywords": [
+    "resume",
+    "ai",
+    "fastapi",
+    "nextjs",
+    "gemini"
+  ],
+  "author": "ThePrepLab Applicant",
+  "license": "MIT"
+}
