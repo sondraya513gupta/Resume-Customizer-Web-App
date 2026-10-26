@@ -158,67 +158,97 @@ class GeminiResumeService:
         return self._parse_and_validate_response(raw_response_text)
 
     async def _call_gemini_api(self, prompt: str) -> str:
-        """Calls Gemini API using google-genai or google-generativeai."""
-        # Try google.genai (new SDK) first, fallback to google.generativeai
+        """Calls Gemini API using google-genai or google-generativeai with model fallback."""
+        candidate_models = [self.model_name]
+        for fallback_m in ["gemini-3.5-flash", "gemini-3.5-flash-lite", "gemini-flash-latest"]:
+            if fallback_m not in candidate_models:
+                candidate_models.append(fallback_m)
+
+        last_error = None
+
+        # Try google.genai (new SDK) first
         try:
             from google import genai
             from google.genai import types
 
             client = genai.Client(api_key=self.api_key)
-            response = client.models.generate_content(
-                model=self.model_name,
-                contents=prompt,
-                config=types.GenerateContentConfig(
-                    system_instruction=SYSTEM_PROMPT,
-                    temperature=0.2,
-                    response_mime_type="application/json"
-                )
-            )
-            return response.text or ""
+
+            for model in candidate_models:
+                try:
+                    response = client.models.generate_content(
+                        model=model,
+                        contents=prompt,
+                        config=types.GenerateContentConfig(
+                            system_instruction=SYSTEM_PROMPT,
+                            temperature=0.2,
+                            response_mime_type="application/json"
+                        )
+                    )
+                    if response and response.text:
+                        return response.text
+                except Exception as model_err:
+                    err_msg = str(model_err).lower()
+                    last_error = model_err
+                    logger.warning("google.genai call failed for model %s: %s", model, str(model_err))
+                    if "api_key" in err_msg or "api key" in err_msg or "401" in err_msg or "permission_denied" in err_msg:
+                        raise HTTPException(
+                            status_code=status.HTTP_401_UNAUTHORIZED,
+                            detail="Invalid Gemini API key provided. Please verify your GEMINI_API_KEY setting."
+                        )
+                    if "quota" in err_msg or "rate limit" in err_msg or "resource_exhausted" in err_msg or "429" in err_msg:
+                        raise HTTPException(
+                            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+                            detail="Gemini API rate limit or quota exceeded. Please check your Google AI Studio plan or try again in a few moments."
+                        )
+                    # If 404 (model not found) or 503 (high demand spike), try next candidate model
+                    continue
+        except HTTPException:
+            raise
         except ImportError:
             pass
         except Exception as e:
-            err_msg = str(e).lower()
-            logger.warning("google.genai call failed, attempting fallback: %s", str(e))
-            if "quota" in err_msg or "rate" in err_msg or "429" in err_msg:
-                raise HTTPException(
-                    status_code=status.HTTP_429_TOO_MANY_REQUESTS,
-                    detail="Gemini API rate limit or quota exceeded. Please check your Google AI Studio plan or try again in a few moments."
-                )
-            if "api key" in err_msg or "401" in err_msg or "permission" in err_msg:
-                raise HTTPException(
-                    status_code=status.HTTP_401_UNAUTHORIZED,
-                    detail="Invalid Gemini API key provided. Please verify your GEMINI_API_KEY setting."
-                )
+            logger.warning("google.genai client initialization failed: %s", str(e))
+            last_error = e
 
         # Fallback to google.generativeai
         try:
             import google.generativeai as gai
             gai.configure(api_key=self.api_key)
-            model = gai.GenerativeModel(
-                model_name=self.model_name,
-                system_instruction=SYSTEM_PROMPT,
-                generation_config={"temperature": 0.2, "response_mime_type": "application/json"}
-            )
-            resp = model.generate_content(prompt)
-            return resp.text or ""
+            for model in candidate_models:
+                try:
+                    gai_model = gai.GenerativeModel(
+                        model_name=model,
+                        system_instruction=SYSTEM_PROMPT,
+                        generation_config={"temperature": 0.2, "response_mime_type": "application/json"}
+                    )
+                    resp = gai_model.generate_content(prompt)
+                    if resp and resp.text:
+                        return resp.text
+                except Exception as gai_err:
+                    err_str = str(gai_err)
+                    last_error = gai_err
+                    logger.warning("google.generativeai failed for model %s: %s", model, err_str)
+                    if "api key" in err_str.lower() or "401" in err_str.lower():
+                        raise HTTPException(
+                            status_code=status.HTTP_401_UNAUTHORIZED,
+                            detail="Authentication failed with Gemini API. Please check your GEMINI_API_KEY."
+                        )
+                    continue
+        except HTTPException:
+            raise
         except Exception as exc:
-            err_str = str(exc)
-            logger.error("Gemini API call failed: %s", err_str)
-            if "quota" in err_str.lower() or "429" in err_str:
-                raise HTTPException(
-                    status_code=status.HTTP_429_TOO_MANY_REQUESTS,
-                    detail="Gemini API rate limit or quota exceeded. Please check your API quota in Google AI Studio."
-                )
-            if "api key" in err_str.lower() or "401" in err_str.lower():
-                raise HTTPException(
-                    status_code=status.HTTP_401_UNAUTHORIZED,
-                    detail="Authentication failed with Gemini API. Please check your GEMINI_API_KEY."
-                )
+            last_error = exc
+
+        err_str = str(last_error) if last_error else "Unknown error"
+        if "quota" in err_str.lower() or "rate limit" in err_str.lower() or "429" in err_str:
             raise HTTPException(
-                status_code=status.HTTP_502_BAD_GATEWAY,
-                detail=f"Error communicating with AI service: {err_str}"
+                status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+                detail="Gemini API rate limit or quota exceeded. Please check your API quota in Google AI Studio."
             )
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail=f"Error communicating with AI service: {err_str}"
+        )
 
     def _parse_and_validate_response(self, raw_text: str) -> CustomizedResume:
         """Cleans, parses, and validates the LLM JSON response."""

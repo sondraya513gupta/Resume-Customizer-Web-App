@@ -19,7 +19,7 @@ class Settings(BaseSettings):
 
     # Gemini LLM Settings
     GEMINI_API_KEY: str = Field(default="", description="Gemini API Key")
-    GEMINI_MODEL: str = Field(default="gemini-1.5-flash", description="Gemini model identifier")
+    GEMINI_MODEL: str = Field(default="gemini-3.5-flash", description="Gemini model identifier")
 
     # Document upload limits
     MAX_FILE_SIZE_MB: int = 5
